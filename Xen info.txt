@@ -1,0 +1,37 @@
+[root@clmu4c-ctx162 bin]# cat xen_info.sh
+#!/bin/bash
+
+# Function to extract data from xl info
+extract_info() {
+    key="$1"
+    value=$(sudo xl info | grep "$key" | awk '{print $3}')
+
+    if [[ "$key" == "total_memory" || "$key" == "free_memory" ]]; then
+        # Convert megabytes to gigabytes (since the value is in megabytes)
+        printf "%.2f\n" "$(echo "scale=4; $value / 1024" | bc)"
+    elif [[ "$key" == "cpu_mhz" ]]; then
+        # Convert MHz to GHz
+        printf "%.2f\n" "$(echo "scale=4; $value / 1000" | bc)"
+    else
+        echo "$value"
+    fi
+}
+
+case "$1" in
+    total_memory|free_memory|sharing_freed_memory|sharing_used_memory|outstanding_claims|free_cpus|xen_major|xen_minor|xen_extra|xen_version|xen_caps|xen_scheduler|xen_pagesize|platform_params|xen_changeset|xen_commandline|cc_compiler|cc_compile_by|cc_compile_domain|cc_compile_date|build_id|xend_config_format|host|release|version|machine|nr_cpus|max_cpu_id|nr_nodes|cores_per_socket|threads_per_core|cpu_mhz|hw_caps|virt_caps)
+        extract_info "$1"
+        ;;
+    *)
+        echo "Unknown parameter: $1"
+        exit 1
+        ;;
+esac
+
+[root@clmu4c-ctx162 bin]#
+
+
+agent configuration
+
+vi /etc/Zabbix/zabbix_agent.conf
+
+UserParameter=xen.info[*],/usr/local/bin/xen_info.sh $1

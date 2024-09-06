@@ -1,0 +1,13 @@
+[root@clmu4c-ctx162 bin]# cat xen_used_memory.sh
+#!/bin/bash
+total=$(/usr/local/bin/xen_info.sh total_memory)
+free=$(/usr/local/bin/xen_info.sh free_memory)
+used=$(echo "$total - $free" | bc)
+printf "%.2f\n" "$used"
+[root@clmu4c-ctx162 bin]#
+
+
+
+agent config
+
+UserParameter=xen.used_memory,/usr/local/bin/xen_used_memory.sh

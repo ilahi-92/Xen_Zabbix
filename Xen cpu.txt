@@ -1,0 +1,31 @@
+[root@clmu4c-ctx162 bin]# cat xen_cpu_usage.sh
+#!/bin/bash
+
+case "$1" in
+    user)
+        top -b -n 1 | grep '%Cpu(s)' | awk '{print $2}'
+        ;;
+    system)
+        top -b -n 1 | grep '%Cpu(s)' | awk '{print $4}'
+        ;;
+    idle)
+        top -b -n 1 | grep '%Cpu(s)' | awk '{print $8}'
+        ;;
+    iowait)
+        top -b -n 1 | grep '%Cpu(s)' | awk '{print $10}'
+        ;;
+    *)
+        echo "Usage: $0 {user|system|idle|iowait}"
+        exit 1
+        ;;
+esac
+[root@clmu4c-ctx162 bin]#
+
+
+UserParameter=xen.cpu.user,/usr/local/bin/xen_cpu_usage.sh user
+UserParameter=xen.cpu.system,/usr/local/bin/xen_cpu_usage.sh system
+UserParameter=xen.cpu.idle,/usr/local/bin/xen_cpu_usage.sh idle
+UserParameter=xen.cpu.iowait,/usr/local/bin/xen_cpu_usage.sh iowait
+UserParameter=xen.used_memory,/usr/local/bin/xen_used_memory.sh
+
+

@@ -1,0 +1,63 @@
+[root@clmu4c-ctx162 bin]# cat xen_sr_utilization.sh
+#!/bin/bash
+
+# File: xen_sr_utilization.sh
+# Save this in /usr/local/bin/xen_sr_utilization.sh
+
+function discover_srs() {
+    echo "{"
+    echo "\"data\":["
+    first=true
+    sudo xe sr-list type=lvmohba params=uuid,name-label | sed 's/^[^:]*: //; s/^[ \t]*//' | while read -r line; do
+        if [[ $line =~ ^[0-9a-f-]{36}$ ]]; then
+            if [ "$first" = true ]; then
+                first=false
+            else
+                echo "},"
+            fi
+            uuid=$line
+            echo "{"
+            echo "\"{#SRUUID}\":\"$uuid\","
+        elif [[ $line != "" ]]; then
+            name=${line:-"Unknown SR"}
+            echo "\"{#SRNAME}\":\"$name\""
+        fi
+    done
+    echo "}"
+    echo "]"
+    echo "}"
+}
+
+function get_sr_utilization() {
+    local uuid=$1
+    local physical_size=$(sudo xe sr-param-get uuid=$uuid param-name=physical-size)
+    local physical_utilization=$(sudo xe sr-param-get uuid=$uuid param-name=physical-utilisation)
+    if [ -n "$physical_size" ] && [ -n "$physical_utilization" ] && [ "$physical_size" -ne 0 ]; then
+        echo "scale=2; ($physical_utilization / $physical_size) * 100" | bc
+    else
+        echo "0"
+    fi
+}
+
+case "$1" in
+    discover)
+        discover_srs
+        ;;
+    utilization)
+        if [ -z "$2" ]; then
+            echo "Error: SR UUID not provided"
+            exit 1
+        fi
+        get_sr_utilization "$2"
+        ;;
+    *)
+        echo "Usage: $0 {discover|utilization <SR_UUID>}"
+        exit 1
+        ;;
+esac
+
+
+
+Test : 
+
+sudo -u zabbix /usr/local/bin/xen_sr_utilization.sh discover

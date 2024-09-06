@@ -1,0 +1,35 @@
+[root@clmu4c-ctx162 bin]# cat /etc/zabbix/zabbix_agentd.conf | grep UserParame
+#       Does not support UserParameters or aliases.
+### Option: UnsafeUserParameters
+# UnsafeUserParameters=0
+### Option: UserParameter
+#       Format: UserParameter=<key>,<shell command>
+# UserParameter=
+UserParameter=xen.info[*],/usr/local/bin/xen_info.sh $1
+#UserParameter=xen.monitor[*],sudo /usr/local/bin/xen_monitor.sh $1
+#UserParameter=xen.vm.discovery,sudo /usr/local/bin/xen_vm_discovery.sh
+UserParameter=xen.vm.discovery,/usr/local/bin/xen_vm_discovery.sh discover
+UserParameter=xen.vm.state[*],/usr/local/bin/xen_vm_discovery.sh state $1
+#UserParameter=xen.monitor[*],/usr/local/bin/xen_monitor.sh $1 $2
+UserParameter=xen.cpu.user,/usr/local/bin/xen_cpu_usage.sh user
+UserParameter=xen.cpu.system,/usr/local/bin/xen_cpu_usage.sh system
+UserParameter=xen.cpu.idle,/usr/local/bin/xen_cpu_usage.sh idle
+UserParameter=xen.cpu.iowait,/usr/local/bin/xen_cpu_usage.sh iowait
+UserParameter=xen.used_memory,/usr/local/bin/xen_used_memory.sh
+#UserParameter=xen.sr.utilization[*],sudo /usr/local/bin/xen_sr_utilization.sh "$1"
+#UserParameter=xen.sr.utilization_percentage,sudo /usr/local/bin/xen_sr_utilization.sh
+UserParameter=xen.local_storage.utilization,sudo /usr/local/bin/xen_local_storage_utilization.sh
+UserParameter=custom.lvmohba.discovery,/usr/local/bin/discover_lvmohba.sh
+UserParameter=xen.sr.discovery,/usr/local/bin/xen_sr_utilization.sh discover
+UserParameter=xen.sr.utilization[*],/usr/local/bin/xen_sr_utilization.sh utilization $1
+UserParameter=sr.physical_utilisation[*],/usr/local/bin/get_sr_utilisation.sh $1
+UserParameter=srs.discovery,/usr/local/bin/discover_srs.sh
+UserParameter=checkrocha,/etc/zabbix/checkro.sh
+UserParameter=datastoredisc[*],/etc/zabbix/Xendatastore.sh $1
+UserParameter=datastoreutil[*],/etc/zabbix/Xendatastore.sh $1 $2| xargs
+UserParameter=datastoretotal[*],/etc/zabbix/Xendatastore.sh $1 $2| xargs
+[root@clmu4c-ctx162 bin]# vi /etc/zabbix/zabbix_agentd.conf
+[root@clmu4c-ctx162 bin]# vi /etc/zabbix/zabbix_agentd.conf
+[root@clmu4c-ctx162 bin]#
+
+

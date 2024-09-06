@@ -1,0 +1,61 @@
+[root@clmu4c-ctx162 bin]# cat xen_vm_discovery.sh
+#!/bin/bash
+
+# File: xen_vm_discovery.sh
+# Save this in /usr/local/bin/xen_vm_discovery.sh
+
+function discover_vms() {
+    echo "{"
+    echo "\"data\":["
+    first=true
+    sudo xe vm-list params=uuid,name-label,power-state | sed 's/^[^:]*: //; s/^[ \t]*//' | while read -r line; do
+        if [[ $line =~ ^[0-9a-f-]{36}$ ]]; then
+            if [ "$first" = true ]; then
+                first=false
+            else
+                echo "},"
+            fi
+            uuid=$line
+            echo "{"
+            echo "\"{#VMUUID}\":\"$uuid\","
+        elif [[ $line =~ ^(running|halted|suspended)$ ]]; then
+            power_state=$line
+            echo "\"{#VMSTATE}\":\"$power_state\""
+        elif [[ $line != "" ]]; then
+            name=${line:-"Unknown VM"}
+            echo "\"{#VMNAME}\":\"$name\","
+        fi
+    done
+    echo "}"
+    echo "]"
+    echo "}"
+}
+
+function get_vm_state() {
+    local uuid=$1
+    sudo xe vm-list params=power-state uuid=$uuid --minimal
+}
+
+case "$1" in
+    discover)
+        discover_vms
+        ;;
+    state)
+        if [ -z "$2" ]; then
+            echo "Error: VM UUID not provided"
+            exit 1
+        fi
+        get_vm_state "$2"
+        ;;
+    *)
+        echo "Usage: $0 {discover|state <VM_UUID>}"
+        exit 1
+        ;;
+esac
+
+
+agnent config
+
+UserParameter=xen.vm.discovery,/usr/local/bin/xen_vm_discovery.sh discover
+UserParameter=xen.vm.state[*],/usr/local/bin/xen_vm_discovery.sh state $1
+

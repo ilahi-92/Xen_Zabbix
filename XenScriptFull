@@ -1,0 +1,366 @@
+#!/usr/bin/env python3
+
+import XenAPI
+import json
+import socket
+import struct
+import time
+from datetime import datetime
+import sys
+import ssl
+import http.client
+import xmlrpc.client
+
+# Xen Master details
+XEN_HOST = "192.168.101.138"
+XEN_USERNAME = "root"
+XEN_PASSWORD = "mumctrp_Pr0dXen@cL!nfr@"
+
+# Zabbix details
+ZABBIX_SERVER = "192.168.230.228"  # This is your Zabbix proxy address
+ZABBIX_PORT = 10051
+ZABBIX_HOST = "Xen_API_Master_Host"  # This matches exactly with your Zabbix host name
+
+# Create a custom SSL context that doesn't verify certificates
+ssl_context = ssl.create_default_context()
+ssl_context.check_hostname = False
+ssl_context.verify_mode = ssl.CERT_NONE
+
+class CustomHTTPSConnection(http.client.HTTPSConnection):
+    def __init__(self, host, **kwargs):
+        super().__init__(host, context=ssl_context, **kwargs)
+
+# Monkey patch the xmlrpc client to use our custom HTTPS connection
+original_https_connection = xmlrpc.client.SafeTransport.make_connection
+def custom_https_connection(self, host):
+    if self._connection and host == self._connection[0]:
+        return self._connection[1]
+    self._connection = host, CustomHTTPSConnection(host)
+    return self._connection[1]
+xmlrpc.client.SafeTransport.make_connection = custom_https_connection
+
+def get_host_cpu_utilization(session, host):
+    host_record = session.xenapi.host.get_record(host)
+    cpu_info = session.xenapi.host.get_cpu_info(host)
+    cpu_count = int(cpu_info['cpu_count'])
+
+    try:
+        cpu_util = session.xenapi.host.query_data_source(host, "cpu_avg")
+        cpu_usage_percent = float(cpu_util) * 100
+    except XenAPI.Failure:
+        try:
+            cpu_util = 0
+            for i in range(cpu_count):
+                cpu_util += float(session.xenapi.host.query_data_source(host, f"cpu{i}"))
+            cpu_usage_percent = (cpu_util / cpu_count) * 100
+        except XenAPI.Failure:
+            cpu_usage_percent = 0
+            print(f"Warning: Could not retrieve CPU utilization for host {host_record['name_label']}")
+
+    return max(0, min(cpu_usage_percent, 100))  # Clamp between 0 and 100
+
+def get_xen_data():
+    print(f"Attempting to connect to Xen host: {XEN_HOST}")
+    session = XenAPI.Session(f"https://{XEN_HOST}")
+    try:
+        print("Logging in...")
+        session.login_with_password(XEN_USERNAME, XEN_PASSWORD)
+        print("Login successful")
+
+        # Get all hosts information
+        print("Fetching hosts information...")
+        hosts = session.xenapi.host.get_all()
+        hosts_data = []
+        for host in hosts:
+            host_record = session.xenapi.host.get_record(host)
+            host_metrics = session.xenapi.host.get_metrics(host)
+            host_metrics_record = session.xenapi.host_metrics.get_record(host_metrics)
+
+            # Calculate CPU usage using the new method
+            host_cpu_info = session.xenapi.host.get_cpu_info(host)
+            cpu_count = int(host_cpu_info['cpu_count'])
+            cpu_usage_percent = get_host_cpu_utilization(session, host)
+
+            # Calculate memory usage
+            memory_total = int(host_metrics_record.get("memory_total", 0))
+            memory_free = int(host_metrics_record.get("memory_free", 0))
+            memory_usage_percent = ((memory_total - memory_free) / memory_total) * 100 if memory_total > 0 else 0
+
+            hosts_data.append({
+                "name": host_record["name_label"],
+                "uuid": host_record["uuid"],
+                "memory_total": memory_total,
+                "memory_free": memory_free,
+                "memory_usage_percent": memory_usage_percent,
+                "cpu_count": cpu_count,
+                "cpu_usage_percent": cpu_usage_percent
+            })
+
+        # Get VM information
+        print("Fetching VM information...")
+        vms = session.xenapi.VM.get_all()
+        vm_data = []
+        for vm in vms:
+            record = session.xenapi.VM.get_record(vm)
+            if not record["is_a_template"] and not record["is_control_domain"]:
+                vm_metrics = session.xenapi.VM.get_metrics(vm)
+                metrics = session.xenapi.VM_metrics.get_record(vm_metrics)
+
+                # Calculate CPU usage
+                vcpus = int(record["VCPUs_max"])
+                cpu_usage = sum(float(v) for v in metrics.get("VCPUs_utilisation", {}).values())
+                cpu_usage_percent = (cpu_usage / vcpus) * 100 if vcpus > 0 else 0
+
+                # Calculate memory usage
+                memory_total = int(metrics.get("memory_actual", 0))
+                memory_free = int(record.get("memory_target", 0))  # Using target as an approximation
+                memory_usage_percent = ((memory_total - memory_free) / memory_total) * 100 if memory_total > 0 else 0
+
+                vm_data.append({
+                    "name": record["name_label"],
+                    "power_state": record["power_state"],
+                    "memory_total": memory_total,
+                    "memory_free": memory_free,
+                    "memory_usage_percent": memory_usage_percent,
+                    "vcpus": vcpus,
+                    "cpu_usage_percent": cpu_usage_percent
+                })
+
+        # Get SR information
+        print("Fetching SR information...")
+        srs = session.xenapi.SR.get_all()
+        sr_data = []
+        for sr in srs:
+            sr_record = session.xenapi.SR.get_record(sr)
+            if sr_record['type'] == 'lvmohba':
+                physical_size = int(sr_record['physical_size'])
+                physical_utilisation = int(sr_record['physical_utilisation'])
+                usage_percentage = (physical_utilisation / physical_size) * 100 if physical_size > 0 else 0
+                sr_data.append({
+                    "name": sr_record['name_label'],
+                    "uuid": sr_record['uuid'],
+                    "physical_size": physical_size,
+                    "physical_utilisation": physical_utilisation,
+                    "usage_percentage": usage_percentage
+                })
+
+        return {
+            "hosts": hosts_data,
+            "vms": vm_data,
+            "srs": sr_data
+        }
+    except XenAPI.Failure as e:
+        print(f"XenAPI Failure: {str(e)}")
+        raise
+    finally:
+        try:
+            if session.is_logged_in():
+                print("Logging out...")
+                session.logout()
+        except:
+            pass
+
+# The rest of your script remains unchanged
+def get_vm_discovery_data(data):
+    discovery_data = {
+        "data": [
+            {
+                "{#VMNAME}": vm["name"].replace(" ", "_"),
+                "{#VMNAMEORIG}": vm["name"]
+            } for vm in data["vms"]
+        ]
+    }
+    return json.dumps(discovery_data)
+
+def get_host_discovery_data(data):
+    discovery_data = {
+        "data": [
+            {
+                "{#HOSTNAME}": host["name"].replace(" ", "_"),
+                "{#HOSTNAMEORIG}": host["name"],
+                "{#HOSTUUID}": host["uuid"]
+            } for host in data["hosts"]
+        ]
+    }
+    return json.dumps(discovery_data)
+
+def get_sr_discovery_data(data):
+    discovery_data = {
+        "data": [
+            {
+                "{#SRNAME}": sr["name"].replace(" ", "_"),
+                "{#SRNAMEORIG}": sr["name"],
+                "{#SRUUID}": sr["uuid"]
+            } for sr in data["srs"]
+        ]
+    }
+    return json.dumps(discovery_data)
+
+def send_to_zabbix(data):
+    metrics = []
+
+    # Add VM discovery data
+    metrics.append({
+        "host": ZABBIX_HOST,
+        "key": "xen.vm.discovery",
+        "value": get_vm_discovery_data(data)
+    })
+
+    # Add host discovery data
+    metrics.append({
+        "host": ZABBIX_HOST,
+        "key": "xen.host.discovery",
+        "value": get_host_discovery_data(data)
+    })
+
+    # Add SR discovery data
+    metrics.append({
+        "host": ZABBIX_HOST,
+        "key": "xen.sr.discovery",
+        "value": get_sr_discovery_data(data)
+    })
+
+    # Add host metrics
+    for host in data["hosts"]:
+        host_name = host["name"].replace(" ", "_")
+        metrics.extend([
+            {
+                "host": ZABBIX_HOST,
+                "key": f"xen.host[{host_name},memory_total]",
+                "value": str(host["memory_total"])
+            },
+            {
+                "host": ZABBIX_HOST,
+                "key": f"xen.host[{host_name},memory_free]",
+                "value": str(host["memory_free"])
+            },
+            {
+                "host": ZABBIX_HOST,
+                "key": f"xen.host[{host_name},memory_usage_percent]",
+                "value": str(host["memory_usage_percent"])
+            },
+            {
+                "host": ZABBIX_HOST,
+                "key": f"xen.host[{host_name},cpu_count]",
+                "value": str(host["cpu_count"])
+            },
+            {
+                "host": ZABBIX_HOST,
+                "key": f"xen.host[{host_name},cpu_usage_percent]",
+                "value": str(host["cpu_usage_percent"])
+            }
+        ])
+
+    # Add VM metrics
+    for vm in data["vms"]:
+        vm_name = vm["name"].replace(" ", "_")
+        metrics.extend([
+            {
+                "host": ZABBIX_HOST,
+                "key": f"xen.vm[{vm_name},cpu]",
+                "value": str(vm["vcpus"])
+            },
+            {
+                "host": ZABBIX_HOST,
+                "key": f"xen.vm[{vm_name},cpu_usage_percent]",
+                "value": str(vm["cpu_usage_percent"])
+            },
+            {
+                "host": ZABBIX_HOST,
+                "key": f"xen.vm[{vm_name},memory]",
+                "value": str(vm["memory_total"])
+            },
+            {
+                "host": ZABBIX_HOST,
+                "key": f"xen.vm[{vm_name},memory_usage_percent]",
+                "value": str(vm["memory_usage_percent"])
+            },
+            {
+                "host": ZABBIX_HOST,
+                "key": f"xen.vm[{vm_name},power_state]",
+                "value": vm["power_state"]
+            }
+        ])
+
+    # Add SR metrics
+    for sr in data["srs"]:
+        sr_name = sr["name"].replace(" ", "_")
+        metrics.extend([
+            {
+                "host": ZABBIX_HOST,
+                "key": f"xen.sr[{sr_name},physical_size]",
+                "value": str(sr["physical_size"])
+            },
+            {
+                "host": ZABBIX_HOST,
+                "key": f"xen.sr[{sr_name},physical_utilisation]",
+                "value": str(sr["physical_utilisation"])
+            },
+            {
+                "host": ZABBIX_HOST,
+                "key": f"xen.sr[{sr_name},usage_percentage]",
+                "value": str(sr["usage_percentage"])
+            }
+        ])
+
+    # Print metrics being sent
+    print("Metrics being sent to Zabbix:")
+    for metric in metrics:
+        print(f"Host: {metric['host']}, Key: {metric['key']}, Value: {metric['value']}")
+
+    # Prepare Zabbix sender protocol data
+    json_data = json.dumps({
+        "request": "sender data",
+        "data": metrics
+    })
+
+    data_len = struct.pack('<Q', len(json_data))
+    packet = b'ZBXD\x01' + data_len + json_data.encode('utf-8')
+
+    # Send data to Zabbix server
+    try:
+        sock = socket.socket()
+        sock.connect((ZABBIX_SERVER, ZABBIX_PORT))
+        sock.sendall(packet)
+
+        # Get response
+        response_header = sock.recv(5)
+        if not response_header == b'ZBXD\x01':
+            print(f"Invalid response from Zabbix server")
+            return
+
+        response_data_header = sock.recv(8)
+        response_len = struct.unpack('<Q', response_data_header)[0]
+        response_raw = sock.recv(response_len)
+        response = json.loads(response_raw.decode('utf-8'))
+
+        print(f"Response from Zabbix: {response}")
+
+        if response['response'] != 'success':
+            print(f"Error from Zabbix: {response.get('info', 'Unknown error')}")
+        elif response['info'].startswith('processed: 0'):
+            print("Warning: No items were processed. Ensure all items exist in Zabbix and are enabled.")
+            print("Check that the host name and item keys match exactly.")
+    except Exception as e:
+        print(f"Error sending data to Zabbix: {str(e)}")
+    finally:
+        sock.close()
+
+if __name__ == "__main__":
+    try:
+        print("Starting Xen data collection...")
+        xen_data = get_xen_data()
+
+        print("Xen data collected:")
+        print(json.dumps(xen_data, indent=2))
+
+        print("Sending data to Zabbix...")
+        send_to_zabbix(xen_data)
+
+        print(f"Data sent to Zabbix at {datetime.now()}")
+    except Exception as e:
+        print(f"Error: {str(e)}", file=sys.stderr)
+        print(f"Error type: {type(e).__name__}", file=sys.stderr)
+        print(f"Traceback:", file=sys.stderr)
+        import traceback
+        traceback.print_exc(file=sys.stderr)

@@ -1,3 +1,8 @@
+Xen Main Script - CPU, RAM, SR Utilization, VMs
+
+.
+
+[root@Mumb4CInfra-Proxy ~]# cat xen_master2.py
 #!/usr/bin/env python3
 
 import XenAPI
@@ -377,6 +382,3 @@ if __name__ == "__main__":
         print(f"Error: {str(e)}", file=sys.stderr)
         print(f"Error type: {type(e).__name__}", file=sys.stderr)
         print(f"Traceback:", file=sys.stderr)
-
-
-Skip hosts that are inaccessible or have issues, rather than failing the entire script.

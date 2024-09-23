@@ -1,8 +1,4 @@
-Xen Main Script - CPU, RAM, SR Utilization, VMs
-
-.
-
-[root@Mumb4CInfra-Proxy ~]# cat xen_master2.py
+[root@Mumb4CInfra-Proxy ~]# cat xen_117.py
 #!/usr/bin/env python3
 
 import XenAPI
@@ -17,14 +13,14 @@ import http.client
 import xmlrpc.client
 
 # Xen Master details
-XEN_HOST = "192.168.230.229"
+XEN_HOST = "192.168.230.117"
 XEN_USERNAME = "root"
 XEN_PASSWORD = "Mum4cCtx_Pr0dXen@cL!nfr@!@2@24"
 
 # Zabbix details
 ZABBIX_SERVER = "192.168.230.228"  # This is your Zabbix proxy address
 ZABBIX_PORT = 10051
-ZABBIX_HOST = "Xen_API_Master_Host_192.168.230.229"  # This matches exactly with your Zabbix host name
+ZABBIX_HOST = "Xen_API_Master_Host_192.168.230.117"  # This matches exactly with your Zabbix host name
 
 # Create a custom SSL context that doesn't verify certificates
 ssl_context = ssl.create_default_context()
@@ -64,6 +60,28 @@ def get_host_cpu_utilization(session, host):
         print(f"Warning: Could not retrieve CPU utilization for host {host}: {str(e)}")
         return None
 
+import time
+
+def get_host_uptime(session, host):
+    try:
+        host_record = session.xenapi.host.get_record(host)
+        other_config = host_record.get('other_config', {})
+        boot_time = other_config.get('boot_time')
+
+        if boot_time:
+            current_time = int(time.time())
+            boot_time = int(float(boot_time))  # Convert to float first, then to int
+            uptime = current_time - boot_time
+            return uptime
+        else:
+            print(f"Warning: Could not retrieve boot time for host {host}")
+            return None
+    except (ValueError, XenAPI.Failure) as e:
+        print(f"Warning: Could not calculate uptime for host {host}: {str(e)}")
+        return None
+
+
+
 def get_xen_data():
     print(f"Attempting to connect to Xen host: {XEN_HOST}")
     session = XenAPI.Session(f"https://{XEN_HOST}")
@@ -96,6 +114,9 @@ def get_xen_data():
                 memory_free = int(host_metrics_record.get("memory_free", 0))
                 memory_usage_percent = ((memory_total - memory_free) / memory_total) * 100 if memory_total > 0 else 0
 
+                # Get host uptime
+                uptime = get_host_uptime(session, host)
+
                 hosts_data.append({
                     "name": host_record["name_label"],
                     "uuid": host_record["uuid"],
@@ -103,7 +124,8 @@ def get_xen_data():
                     "memory_free": memory_free,
                     "memory_usage_percent": memory_usage_percent,
                     "cpu_count": cpu_count,
-                    "cpu_usage_percent": cpu_usage_percent
+                    "cpu_usage_percent": cpu_usage_percent,
+                    "uptime": uptime
                 })
             except XenAPI.Failure as e:
                 print(f"Warning: Could not retrieve information for host {host}: {str(e)}")
@@ -268,6 +290,11 @@ def send_to_zabbix(data):
                 "host": ZABBIX_HOST,
                 "key": f"xen.host[{host_name},cpu_usage_percent]",
                 "value": str(host["cpu_usage_percent"])
+            },
+            {
+                "host": ZABBIX_HOST,
+                "key": f"xen.host[{host_name},uptime]",
+                "value": str(host["uptime"])
             }
         ])
 

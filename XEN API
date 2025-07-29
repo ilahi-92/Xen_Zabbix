@@ -1,0 +1,223 @@
+SYCHRONIZATION SCRIPT + main Scritp + XEN CONFIG + Required FILES + PORT Enables:  XEN monitoirng : 
+
+[root@peocit-zabbix-proxy ~]# cat synchronized_test.py - https://claude.ai/chat/e79ee6de-638b-4264-9d2a-f097e3b80538
+#!/usr/bin/env python3
+
+import XenAPI
+import json
+import socket
+import struct
+import time
+import ssl
+import http.client
+import xmlrpc.client
+
+from xen_config import get_xen_config
+
+# Configuration
+host_id = "11"
+config = get_xen_config(host_id)
+
+XEN_HOST = config['host']
+XEN_USERNAME = config['username']
+XEN_PASSWORD = config['password']
+
+ZABBIX_SERVER = "172.26.11.44"
+ZABBIX_PORT = 10051
+ZABBIX_HOST = "Peocit_Xen_PEOCITHYDXEN01_172.26.11.54"
+
+# SSL setup
+ssl_context = ssl.create_default_context()
+ssl_context.check_hostname = False
+ssl_context.verify_mode = ssl.CERT_NONE
+
+class CustomHTTPSConnection(http.client.HTTPSConnection):
+    def __init__(self, host, **kwargs):
+        super().__init__(host, context=ssl_context, **kwargs)
+
+original_https_connection = xmlrpc.client.SafeTransport.make_connection
+def custom_https_connection(self, host):
+    if self._connection and host == self._connection[0]:
+        return self._connection[1]
+    self._connection = host, CustomHTTPSConnection(host)
+    return self._connection[1]
+xmlrpc.client.SafeTransport.make_connection = custom_https_connection
+
+def send_to_zabbix(metrics, label):
+    """Send metrics and return detailed results"""
+    json_data = json.dumps({
+        "request": "sender data",
+        "data": metrics
+    })
+
+    data_len = struct.pack('<Q', len(json_data))
+    packet = b'ZBXD\x01' + data_len + json_data.encode('utf-8')
+
+    try:
+        sock = socket.socket()
+        sock.settimeout(15)
+        sock.connect((ZABBIX_SERVER, ZABBIX_PORT))
+        sock.sendall(packet)
+
+        response_header = sock.recv(5)
+        response_data_header = sock.recv(8)
+        response_len = struct.unpack('<Q', response_data_header)[0]
+        response_raw = sock.recv(response_len)
+        response = json.loads(response_raw.decode('utf-8'))
+
+        print(f"📊 {label}: {response}")
+        return response
+
+    except Exception as e:
+        print(f"❌ {label} failed: {e}")
+        return None
+    finally:
+        sock.close()
+
+def get_real_xen_data():
+    """Get actual data from Xen"""
+    print(f"🔗 Connecting to Xen: {XEN_HOST}")
+    session = XenAPI.Session(f"https://{XEN_HOST}")
+
+    try:
+        session.login_with_password(XEN_USERNAME, XEN_PASSWORD)
+
+        # Get SRs (focus on these since we see them working in other environment)
+        srs = session.xenapi.SR.get_all()
+        sr_data = []
+
+        for sr in srs:
+            sr_record = session.xenapi.SR.get_record(sr)
+            if sr_record['type'] == 'lvmohba':
+                sr_name = sr_record['name_label']
+                sr_name_clean = sr_name.replace(" ", "_")
+
+                physical_size = int(sr_record['physical_size'])
+                physical_utilisation = int(sr_record['physical_utilisation'])
+                usage_percentage = (physical_utilisation / physical_size) * 100 if physical_size > 0 else 0
+
+                sr_data.append({
+                    "name": sr_name,
+                    "name_clean": sr_name_clean,
+                    "uuid": sr_record['uuid'],
+                    "physical_size": physical_size,
+                    "physical_utilisation": physical_utilisation,
+                    "usage_percentage": usage_percentage
+                })
+
+                print(f"📀 Found SR: '{sr_name}' -> '{sr_name_clean}'")
+
+        return {"srs": sr_data}
+
+    finally:
+        session.logout()
+
+def synchronized_test():
+    """Send discovery and immediately test with real data"""
+
+    print("🚀 SYNCHRONIZED DISCOVERY + DATA TEST")
+    print("=" * 60)
+
+    # Step 1: Get real Xen data
+    xen_data = get_real_xen_data()
+
+    if not xen_data["srs"]:
+        print("❌ No SRs found!")
+        return
+
+    # Step 2: Send discovery data
+    print(f"\n📡 STEP 1: Sending SR Discovery...")
+
+    sr_discovery_data = {
+        "data": [
+            {
+                "{#SRNAME}": sr["name_clean"],
+                "{#SRNAMEORIG}": sr["name"],
+                "{#SRUUID}": sr["uuid"]
+            } for sr in xen_data["srs"]
+        ]
+    }
+
+    discovery_metrics = [{
+        "host": ZABBIX_HOST,
+        "key": "xen.sr.discovery",
+        "value": json.dumps(sr_discovery_data)
+    }]
+
+    discovery_result = send_to_zabbix(discovery_metrics, "Discovery")
+    if not discovery_result:
+        return
+
+    # Step 3: Wait briefly for processing
+    print(f"\n⏱️  Waiting 45 seconds for Zabbix to create items...")
+    time.sleep(45)
+
+    # Step 4: Send actual SR metrics
+    print(f"\n📊 STEP 2: Sending SR Metrics...")
+
+    sr_metrics = []
+    for sr in xen_data["srs"]:
+        sr_name_clean = sr["name_clean"]
+        sr_metrics.extend([
+            {
+                "host": ZABBIX_HOST,
+                "key": f"xen.sr[{sr_name_clean},physical_size]",
+                "value": str(sr["physical_size"])
+            },
+            {
+                "host": ZABBIX_HOST,
+                "key": f"xen.sr[{sr_name_clean},physical_utilisation]",
+                "value": str(sr["physical_utilisation"])
+            },
+            {
+                "host": ZABBIX_HOST,
+                "key": f"xen.sr[{sr_name_clean},usage_percentage]",
+                "value": str(sr["usage_percentage"])
+            }
+        ])
+
+        print(f"📤 Will send metrics for SR: {sr_name_clean}")
+        print(f"   - xen.sr[{sr_name_clean},physical_size] = {sr['physical_size']}")
+        print(f"   - xen.sr[{sr_name_clean},usage_percentage] = {sr['usage_percentage']:.2f}%")
+
+    metrics_result = send_to_zabbix(sr_metrics, "SR Metrics")
+
+    # Step 5: Analyze results
+    print(f"\n🔍 ANALYSIS:")
+    print("=" * 40)
+
+    if discovery_result and 'info' in discovery_result:
+        print(f"Discovery: {discovery_result['info']}")
+
+    if metrics_result and 'info' in metrics_result:
+        info = metrics_result['info']
+        print(f"Metrics: {info}")
+
+        # Parse results
+        if 'processed:' in info:
+            parts = info.split(';')
+            for part in parts:
+                part = part.strip()
+                if 'processed:' in part:
+                    processed = int(part.split(':')[1].strip())
+                elif 'failed:' in part:
+                    failed = int(part.split(':')[1].strip())
+                elif 'total:' in part:
+                    total = int(part.split(':')[1].strip())
+
+            success_rate = (processed / total * 100) if total > 0 else 0
+            print(f"📈 Success Rate: {processed}/{total} ({success_rate:.1f}%)")
+
+            if success_rate > 0:
+                print("🎉 SUCCESS! Items are being created and accepting data!")
+            else:
+                print("🤔 Items still not accepting data. Possible issues:")
+                print("   - Items not fully created yet (wait longer)")
+                print("   - Template item prototypes have different key format")
+                print("   - Discovery rule configuration issue")
+
+if __name__ == "__main__":
+    synchronized_test()
+[root@peocit-zabbix-proxy ~]#
+
+
